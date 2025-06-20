@@ -1,0 +1,1845 @@
+import pygame
+import cv2
+import numpy as np
+import os
+import time
+from logger import logger
+from dbutil import DatabaseManager
+from datetime import datetime
+import threading
+import requests
+import base64
+import json
+
+# 白色主题配色方案
+BACKGROUND = (255, 255, 255)  # 白色背景
+SIDEBAR_COLOR = (248, 249, 250)  # 浅灰色侧边栏
+BUTTON_COLOR = (33, 150, 243)  # 蓝色按钮
+BUTTON_HOVER = (25, 118, 210)  # 悬停蓝色
+TEXT_COLOR = (33, 33, 33)  # 深色文字
+SIDEBAR_TEXT = (33, 33, 33)  # 深色侧边栏文字
+WHITE = (255, 255, 255)
+GREEN = (76, 175, 80)  # 绿色
+RED = (244, 67, 54)  # 红色
+BORDER_COLOR = (200, 200, 200)  # 边框色
+LIGHT_GRAY = (240, 240, 240)  # 浅灰色
+
+# 百度AI配置
+BAIDU_API_KEY = "4HkU9zowlvcDAZg0N3qO0XYd"
+BAIDU_SECRET_KEY = "hxEQ8xNN96YrdmAbGXxeniPCWAh2errt"
+
+# 初始化pygame
+pygame.init()
+pygame.font.init()
+
+
+# 字体设置 - 使用直接指定字体文件的方式
+def create_fonts():
+    """创建字体对象"""
+    try:
+        # Windows系统字体路径
+        font_paths = [
+            "C:/Windows/Fonts/simhei.ttf",  # 黑体
+            "C:/Windows/Fonts/simsun.ttc",  # 宋体
+            "C:/Windows/Fonts/msyh.ttc",  # 微软雅黑
+            "C:/Windows/Fonts/simkai.ttf",  # 楷体
+            "C:/Windows/Fonts/simfang.ttf",  # 仿宋
+        ]
+
+        # 尝试加载字体文件
+        font_file = None
+        for path in font_paths:
+            if os.path.exists(path):
+                font_file = path
+                break
+
+        if font_file:
+            # 使用找到的字体文件
+            title_font = pygame.font.Font(font_file, 36)
+            info_font = pygame.font.Font(font_file, 28)
+            button_font = pygame.font.Font(font_file, 24)
+            normal_font = pygame.font.Font(font_file, 20)
+            small_font = pygame.font.Font(font_file, 16)
+            logger.info(f"成功加载字体文件: {font_file}")
+        else:
+            # 如果没有找到字体文件，尝试使用系统字体
+            try:
+                title_font = pygame.font.SysFont("simhei", 36, bold=True)
+                info_font = pygame.font.SysFont("simhei", 28)
+                button_font = pygame.font.SysFont("simhei", 24)
+                normal_font = pygame.font.SysFont("simhei", 20)
+                small_font = pygame.font.SysFont("simhei", 16)
+                logger.info("使用系统字体")
+            except:
+                # 如果系统字体也失败，使用默认字体
+                title_font = pygame.font.Font(None, 36)
+                info_font = pygame.font.Font(None, 28)
+                button_font = pygame.font.Font(None, 24)
+                normal_font = pygame.font.Font(None, 20)
+                small_font = pygame.font.Font(None, 16)
+                logger.warning("使用默认字体")
+
+        return title_font, info_font, button_font, normal_font, small_font
+    except Exception as e:
+        logger.error(f"字体创建失败: {e}")
+        # 使用最基本的字体作为后备
+        default_font = pygame.font.Font(None, 24)
+        return default_font, default_font, default_font, default_font, default_font
+
+
+title_font, info_font, button_font, normal_font, small_font = create_fonts()
+
+
+class ModernButton:
+    def __init__(self, x, y, width, height, text, font_obj=button_font, color=None):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.font = font_obj
+        self.is_hovered = False
+        self.is_pressed = False
+        self.custom_color = color
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if self.rect.collidepoint(event.pos):
+                self.is_pressed = True
+                return False  # 按下时不返回True，等待释放
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if self.is_pressed:
+                self.is_pressed = False
+                if self.rect.collidepoint(event.pos):
+                    return True  # 只有在按钮区域内释放时才返回True
+        return False
+
+    def check_hover(self, mouse_pos):
+        self.is_hovered = self.rect.collidepoint(mouse_pos)
+
+    def draw(self, screen):
+        if self.custom_color:
+            base_color = self.custom_color
+        else:
+            base_color = BUTTON_COLOR
+
+        if self.is_pressed:
+            color = tuple(max(0, c - 30) for c in base_color)
+        elif self.is_hovered:
+            color = tuple(max(0, c - 15) for c in base_color)
+        else:
+            color = base_color
+
+        # 绘制按钮背景
+        pygame.draw.rect(screen, color, self.rect)
+        pygame.draw.rect(screen, BORDER_COLOR, self.rect, 2)
+
+        # 绘制按钮文字
+        text_surface = self.font.render(self.text, True, WHITE)
+        text_rect = text_surface.get_rect(center=self.rect.center)
+        screen.blit(text_surface, text_rect)
+
+
+class PaymentWindow:
+    """支付页面类"""
+    def __init__(self, screen, payment_info):
+        self.screen = screen
+        self.payment_info = payment_info
+        self.screen_width = screen.get_width()
+        self.screen_height = screen.get_height()
+
+        # 支付页面尺寸（简化版，不包含二维码）
+        self.window_width = 500
+        self.window_height = 350
+        self.window_x = (self.screen_width - self.window_width) // 2
+        self.window_y = (self.screen_height - self.window_height) // 2
+
+        # 支付方式按钮
+        button_width = 120
+        button_height = 40
+        button_y = self.window_y + 200
+
+        self.wechat_button = ModernButton(
+            self.window_x + 50, button_y, button_width, button_height,
+            "微信支付", normal_font, GREEN
+        )
+        self.alipay_button = ModernButton(
+            self.window_x + 190, button_y, button_width, button_height,
+            "支付宝", normal_font, BUTTON_COLOR
+        )
+        self.cash_button = ModernButton(
+            self.window_x + 330, button_y, button_width, button_height,
+            "现金支付", normal_font, (255, 165, 0)  # 橙色
+        )
+
+        # 确认和取消按钮
+        self.confirm_button = ModernButton(
+            self.window_x + 150, self.window_y + 280, 80, 35,
+            "确认支付", small_font, GREEN
+        )
+        self.cancel_button = ModernButton(
+            self.window_x + 270, self.window_y + 280, 80, 35,
+            "取消", small_font, RED
+        )
+
+        # 二维码相关
+        self.qr_code_surface = None
+        self.generate_qr_code()
+
+        self.selected_payment = None
+        self.is_visible = True
+        self.payment_completed = False
+        self.payment_cancelled = False
+
+    def generate_qr_code(self):
+        """生成支付二维码"""
+        try:
+            import qrcode
+            from PIL import Image
+
+            # 生成支付信息（您可以替换为真实的支付链接）
+            payment_info = f"停车费支付:{self.payment_info['plate']}:{self.payment_info['fee']:.0f}元"
+            payment_url = f"https://your-payment-system.com/pay?info={payment_info}"
+
+            # 生成二维码
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=4,
+                border=2,
+            )
+            qr.add_data(payment_url)
+            qr.make(fit=True)
+
+            # 创建二维码图像
+            qr_img = qr.make_image(fill_color="black", back_color="white")
+            qr_img = qr_img.resize((120, 120))  # 调整大小
+
+            # 转换为pygame surface
+            qr_mode = qr_img.mode
+            qr_size = qr_img.size
+            qr_data = qr_img.tobytes()
+
+            self.qr_code_surface = pygame.image.fromstring(qr_data, qr_size, qr_mode)
+
+        except ImportError:
+            # 如果没有安装qrcode库，创建一个占位符
+            self.qr_code_surface = pygame.Surface((120, 120))
+            self.qr_code_surface.fill((200, 200, 200))
+
+            # 在占位符上绘制文字
+            font = pygame.font.Font(None, 24)
+            text1 = font.render("二维码", True, (0, 0, 0))
+            text2 = font.render("占位符", True, (0, 0, 0))
+
+            text1_rect = text1.get_rect(center=(60, 45))
+            text2_rect = text2.get_rect(center=(60, 75))
+
+            self.qr_code_surface.blit(text1, text1_rect)
+            self.qr_code_surface.blit(text2, text2_rect)
+
+        except Exception as e:
+            logger.error(f"生成二维码失败: {e}")
+            # 创建错误占位符
+            self.qr_code_surface = pygame.Surface((120, 120))
+            self.qr_code_surface.fill((255, 200, 200))
+
+    def handle_event(self, event):
+        """处理支付页面事件"""
+        if not self.is_visible:
+            return False
+
+        if self.wechat_button.handle_event(event):
+            self.selected_payment = "微信支付"
+            return True
+        elif self.alipay_button.handle_event(event):
+            self.selected_payment = "支付宝"
+            return True
+        elif self.cash_button.handle_event(event):
+            self.selected_payment = "现金支付"
+            return True
+        elif self.confirm_button.handle_event(event):
+            if self.selected_payment:
+                self.payment_completed = True
+                self.is_visible = False
+                return True
+        elif self.cancel_button.handle_event(event):
+            self.payment_cancelled = True
+            self.is_visible = False
+            return True
+
+        return False
+
+    def check_hover(self, mouse_pos):
+        """检查鼠标悬停"""
+        if not self.is_visible:
+            return
+
+        self.wechat_button.check_hover(mouse_pos)
+        self.alipay_button.check_hover(mouse_pos)
+        self.cash_button.check_hover(mouse_pos)
+        self.confirm_button.check_hover(mouse_pos)
+        self.cancel_button.check_hover(mouse_pos)
+
+    def draw(self):
+        """绘制支付页面"""
+        if not self.is_visible:
+            return
+
+        # 绘制半透明背景
+        overlay = pygame.Surface((self.screen_width, self.screen_height))
+        overlay.set_alpha(128)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+
+        # 绘制支付窗口背景
+        window_rect = pygame.Rect(self.window_x, self.window_y, self.window_width, self.window_height)
+        pygame.draw.rect(self.screen, WHITE, window_rect)
+        pygame.draw.rect(self.screen, BORDER_COLOR, window_rect, 3)
+
+        # 标题
+        title_text = title_font.render("停车费支付", True, TEXT_COLOR)
+        title_rect = title_text.get_rect(center=(self.window_x + self.window_width // 2, self.window_y + 30))
+        self.screen.blit(title_text, title_rect)
+
+        # 车辆信息
+        y_pos = self.window_y + 70
+
+        # 车牌号
+        plate_text = info_font.render(f"车牌号: {self.payment_info['plate']}", True, TEXT_COLOR)
+        self.screen.blit(plate_text, (self.window_x + 30, y_pos))
+        y_pos += 35
+
+        # 入库时间
+        entry_time_str = self.payment_info['entry_time'].strftime('%Y-%m-%d %H:%M')
+        entry_text = normal_font.render(f"入库时间: {entry_time_str}", True, TEXT_COLOR)
+        self.screen.blit(entry_text, (self.window_x + 30, y_pos))
+        y_pos += 25
+
+        # 出库时间
+        exit_time_str = self.payment_info['exit_time'].strftime('%Y-%m-%d %H:%M')
+        exit_text = normal_font.render(f"出库时间: {exit_time_str}", True, TEXT_COLOR)
+        self.screen.blit(exit_text, (self.window_x + 30, y_pos))
+        y_pos += 25
+
+        # 停车时长
+        duration_text = normal_font.render(f"停车时长: {self.payment_info['duration_hours']}小时", True, TEXT_COLOR)
+        self.screen.blit(duration_text, (self.window_x + 30, y_pos))
+        y_pos += 35
+
+        # 应付金额（突出显示）
+        fee_text = title_font.render(f"应付金额: {self.payment_info['fee']:.0f}元", True, RED)
+        fee_rect = fee_text.get_rect(center=(self.window_x + self.window_width // 2, y_pos))
+        self.screen.blit(fee_text, fee_rect)
+        y_pos += 50
+
+        # 扫码支付提示
+        qr_tip = normal_font.render("扫码支付请查看右侧边栏", True, (255, 165, 0))
+        qr_tip_rect = qr_tip.get_rect(center=(self.window_x + self.window_width // 2, y_pos))
+        self.screen.blit(qr_tip, qr_tip_rect)
+        y_pos += 30
+
+        # 支付方式标题
+        payment_title = info_font.render("选择支付方式:", True, TEXT_COLOR)
+        self.screen.blit(payment_title, (self.window_x + 30, y_pos))
+
+        # 绘制支付方式按钮
+        self.wechat_button.draw(self.screen)
+        self.alipay_button.draw(self.screen)
+        self.cash_button.draw(self.screen)
+
+        # 显示选中的支付方式
+        if self.selected_payment:
+            selected_text = small_font.render(f"已选择: {self.selected_payment}", True, GREEN)
+            self.screen.blit(selected_text, (self.window_x + 30, self.window_y + 300))
+
+        # 绘制确认和取消按钮
+        self.confirm_button.draw(self.screen)
+        self.cancel_button.draw(self.screen)
+
+
+class BaiduPlateRecognition:
+    """百度AI车牌识别类"""
+
+    def __init__(self):
+        self.access_token = None
+        self.get_access_token()
+
+    def get_access_token(self):
+        """获取百度AI访问令牌"""
+        try:
+            url = "https://aip.baidubce.com/oauth/2.0/token"
+            params = {
+                "grant_type": "client_credentials",
+                "client_id": BAIDU_API_KEY,
+                "client_secret": BAIDU_SECRET_KEY
+            }
+            response = requests.post(url, params=params)
+            if response.status_code == 200:
+                result = response.json()
+                self.access_token = result.get("access_token")
+                logger.info("百度AI访问令牌获取成功")
+            else:
+                logger.error(f"获取访问令牌失败: {response.status_code}")
+        except Exception as e:
+            logger.error(f"获取访问令牌异常: {e}")
+
+    def recognize_plate(self, image):
+        """识别车牌"""
+        if not self.access_token:
+            logger.error("未获取到访问令牌")
+            self.get_access_token()  # 重新获取token
+            if not self.access_token:
+                return None
+
+        try:
+            # 提高图片质量
+            _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            img_base64 = base64.b64encode(buffer).decode('utf-8')
+
+            url = f"https://aip.baidubce.com/rest/2.0/ocr/v1/license_plate?access_token={self.access_token}"
+            headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+            data = {
+                'image': img_base64,
+                'multi_detect': 'false'  # 只检测一个车牌
+            }
+
+            response = requests.post(url, headers=headers, data=data, timeout=10)
+
+            logger.info(f"API响应状态码: {response.status_code}")
+            logger.info(f"API响应内容: {response.text[:500]}")  # 记录前500字符
+
+            if response.status_code == 200:
+                result = response.json()
+                if 'words_result' in result and result['words_result']:
+                    plate_number = result['words_result']['number']
+                    logger.info(f"车牌识别成功: {plate_number}")
+                    return plate_number
+                else:
+                    logger.warning(f"未识别到车牌，API返回: {result}")
+                    return None
+            else:
+                logger.error(f"API调用失败: {response.status_code}, 响应: {response.text}")
+                return None
+
+        except requests.exceptions.Timeout:
+            logger.error("API调用超时")
+            return None
+        except Exception as e:
+            logger.error(f"车牌识别异常: {e}")
+            return None
+
+
+class PlateRecognitionWindow:
+    def __init__(self):
+        # 屏幕尺寸
+        self.SCREEN_WIDTH = 1200
+        self.SCREEN_HEIGHT = 700
+
+        # 先创建屏幕避免黑屏
+        self.screen = pygame.display.set_mode((self.SCREEN_WIDTH, self.SCREEN_HEIGHT))
+        pygame.display.set_caption("智能停车场车牌识别系统")
+
+        # 立即显示初始界面
+        self.screen.fill(BACKGROUND)
+        loading_text = normal_font.render("系统初始化中...", True, TEXT_COLOR)
+        text_rect = loading_text.get_rect(center=(self.SCREEN_WIDTH // 2, self.SCREEN_HEIGHT // 2))
+        self.screen.blit(loading_text, text_rect)
+        pygame.display.flip()
+
+        # 数据库管理器
+        try:
+            self.db = DatabaseManager()
+            logger.info("数据库连接成功")
+        except Exception as e:
+            logger.error(f"数据库连接失败: {e}")
+            self.db = None
+            # 显示错误信息
+            error_text = normal_font.render(f"数据库连接失败: {str(e)}", True, RED)
+            error_rect = error_text.get_rect(center=(self.SCREEN_WIDTH // 2, self.SCREEN_HEIGHT // 2 + 50))
+            self.screen.blit(error_text, error_rect)
+            pygame.display.flip()
+
+        # 百度AI识别器
+        self.baidu_ai = BaiduPlateRecognition()
+
+        # 车位信息
+        self.total_spaces = 30
+        self.occupied_spaces = 0
+        self.update_parking_info()
+
+        # UI布局 - 左侧摄像头区域，右侧控制面板
+        self.sidebar_width = 350
+        self.sidebar_x = self.SCREEN_WIDTH - self.sidebar_width
+
+        # 识别区域 - 左侧摄像头显示区域（调小一点）
+        camera_width = self.sidebar_x - 40
+        camera_height = 550  # 减小高度
+        self.recognition_rect = pygame.Rect(20, 20, camera_width, camera_height)
+
+        # 按钮区域 - 放在摄像头下方
+        button_width = 120
+        button_height = 45
+        button_spacing = 15
+        buttons_total_width = button_width * 3 + button_spacing * 2
+        buttons_start_x = 20 + (camera_width - buttons_total_width) // 2
+        buttons_y = self.recognition_rect.bottom + 30
+
+        # 重新计算按钮布局（5个按钮）
+        button_width = 100
+        button_height = 45
+        button_spacing = 12
+        buttons_total_width = button_width * 5 + button_spacing * 4  # 5个按钮
+        buttons_start_x = 20 + (camera_width - buttons_total_width) // 2
+
+        self.recognize_button = ModernButton(buttons_start_x, buttons_y, button_width, button_height,
+                                             "识别车牌", button_font)
+        self.parking_info_button = ModernButton(buttons_start_x + button_width + button_spacing, buttons_y,
+                                                button_width, button_height, "停车信息", button_font)
+        self.payment_system_button = ModernButton(buttons_start_x + button_width * 2 + button_spacing * 2, buttons_y,
+                                                  button_width, button_height, "缴费系统", button_font, (255, 165, 0))  # 橙色
+        self.statistics_button = ModernButton(buttons_start_x + button_width * 3 + button_spacing * 3, buttons_y,
+                                             button_width, button_height, "统计分析", button_font, (138, 43, 226))  # 紫色
+        self.exit_button = ModernButton(buttons_start_x + button_width * 4 + button_spacing * 4, buttons_y,
+                                        button_width, button_height, "退出系统", button_font)
+
+        # 摄像头 - 延迟初始化避免黑屏
+        self.camera = None
+        self.camera_frame = None
+        self.camera_running = False
+
+        # 识别相关
+        self.recognized_plate = ""
+        self.recognition_time = None
+        self.message = ""
+        self.message_color = TEXT_COLOR
+        self.message_time = None
+        self.is_recognizing = False
+
+        # 最后一次交易信息
+        self.last_transaction = None
+
+        # 支付相关
+        self.payment_window = None
+        self.pending_exit_info = None  # 待支付的出库信息
+        self.show_payment_sidebar = False  # 显示缴费边栏
+        self.selected_payment_method = None  # 选择的支付方式
+        self.show_qr_code = False  # 显示二维码
+
+        # 停车信息显示状态
+        self.show_parking_info = False
+
+        # 查询功能相关变量
+        self.search_text = ""  # 查询文本
+        self.search_active = False  # 查询框是否激活
+        self.search_results = []  # 查询结果
+
+        # 统计窗口防重复打开
+        self.statistics_window_opened = False
+        self.last_statistics_click_time = 0
+
+        # 状态变量
+        self.running = True
+
+        # 初始化摄像头（异步）
+        self.init_camera_async()
+
+        logger.info("车牌识别窗口初始化完成")
+
+    def init_camera_async(self):
+        """异步初始化摄像头"""
+
+        def init_camera():
+            try:
+                self.camera = cv2.VideoCapture(0)
+                if self.camera.isOpened():
+                    # 设置摄像头参数
+                    camera_width = self.recognition_rect.width
+                    camera_height = self.recognition_rect.height
+
+                    # 设置更高的分辨率和帧率
+                    self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, camera_width)
+                    self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_height)
+                    self.camera.set(cv2.CAP_PROP_FPS, 30)  # 设置30fps
+                    self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 最小化缓冲区
+                    self.camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))  # 使用MJPG编码器
+
+                    self.camera_running = True
+                    logger.info("摄像头初始化成功")
+                    # 启动摄像头线程
+                    self.camera_thread = threading.Thread(target=self.camera_loop, daemon=True)
+                    self.camera_thread.start()
+                else:
+                    logger.error("摄像头初始化失败")
+                    self.camera = None
+            except Exception as e:
+                logger.error(f"摄像头初始化异常: {e}")
+                self.camera = None
+
+        # 在后台线程中初始化摄像头
+        init_thread = threading.Thread(target=init_camera, daemon=True)
+        init_thread.start()
+
+    def camera_loop(self):
+        """摄像头循环线程"""
+        while self.camera_running and self.camera:
+            try:
+                ret, frame = self.camera.read()
+                if ret:
+                    # 直接调整大小，减少处理步骤
+                    frame = cv2.resize(frame, (self.recognition_rect.width, self.recognition_rect.height),
+                                       interpolation=cv2.INTER_LINEAR)
+                    # 使用更快的颜色转换方法
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    self.camera_frame = frame
+                time.sleep(0.01)  # 减少延迟，提高帧率
+            except Exception as e:
+                logger.error(f"摄像头读取错误: {e}")
+                break
+
+    def update_parking_info(self):
+        """更新车位信息"""
+        try:
+            if self.db is None:
+                logger.error("数据库连接不可用")
+                self.occupied_spaces = 0
+                return
+
+            # 使用parkinfo表获取当前在库车辆数（state=1表示在库）
+            current_parked = self.db.get_current_parked_vehicles_from_parkinfo()
+            self.occupied_spaces = len(current_parked)
+            logger.info(f"车位信息更新: 总车位{self.total_spaces}, 已占用{self.occupied_spaces}, 剩余{self.total_spaces - self.occupied_spaces}")
+        except Exception as e:
+            logger.error(f"更新车位信息失败: {e}")
+            self.occupied_spaces = 0  # 出错时设为0
+
+    def get_parking_status_info(self):
+        """获取停车场状态信息"""
+        remaining_spaces = self.total_spaces - self.occupied_spaces
+
+        if remaining_spaces <= 0:
+            status_text = "停车场已满！"
+            status_color = RED
+        elif remaining_spaces <= 2:
+            status_text = f"停车场状态紧张，仅剩{remaining_spaces}个车位"
+            status_color = (255, 165, 0)  # 橙色
+        else:
+            status_text = f"停车场状态充足，剩余{remaining_spaces}个车位"
+            status_color = GREEN
+
+        return status_text, status_color
+
+    def calculate_parking_fee(self, entry_time, exit_time):
+        """计算停车费用，10元/小时"""
+        try:
+            if isinstance(entry_time, str):
+                entry_time = datetime.strptime(entry_time, '%Y-%m-%d %H:%M:%S')
+            if isinstance(exit_time, str):
+                exit_time = datetime.strptime(exit_time, '%Y-%m-%d %H:%M:%S')
+
+            # 计算停车时长（小时）
+            duration = exit_time - entry_time
+            hours = duration.total_seconds() / 3600
+
+            # 不足1小时按1小时计算
+            if hours <= 1:
+                fee = 10.0
+                hours_display = 1
+            else:
+                # 超过1小时的部分按小时计算，不足1小时的部分按1小时计算
+                hours_display = int(hours) + (1 if hours % 1 > 0 else 0)
+                fee = hours_display * 10.0
+
+            return fee, hours_display, duration
+        except Exception as e:
+            logger.error(f"计算停车费用失败: {e}")
+            return 10.0, 1, None
+
+    def recognize_plate_with_baidu(self):
+        """使用百度AI识别车牌"""
+        if self.camera_frame is None:
+            self.message = "无法获取摄像头画面"
+            self.message_color = RED
+            self.message_time = time.time()
+            return
+
+        self.is_recognizing = True
+        self.message = "正在识别中..."
+        self.message_color = TEXT_COLOR
+        self.message_time = time.time()
+
+        try:
+            bgr_frame = cv2.cvtColor(self.camera_frame, cv2.COLOR_RGB2BGR)
+            plate_number = self.baidu_ai.recognize_plate(bgr_frame)
+
+            # 如果百度API识别失败，使用测试车牌号（仅用于演示）
+            if not plate_number:
+                import random
+                test_plates = ["粤A12345", "粤B67890", "京C11111", "沪D22222", "川E33333"]
+                plate_number = random.choice(test_plates)
+                logger.info(f"使用测试车牌号: {plate_number}")
+
+            if plate_number:
+                self.recognized_plate = plate_number
+                self.recognition_time = datetime.now()
+
+                try:
+                    # 查找parkinfo表中的入库记录（state=1表示在库）
+                    latest_entry = self.db.find_latest_entry_from_parkinfo(plate_number)
+
+                    if latest_entry:
+                        # 车辆出库 - 计算费用，等待缴费按钮
+                        entry_time = latest_entry[2]  # inorouttime字段
+                        exit_time = self.recognition_time
+
+                        # 计算停车费用
+                        fee, hours, duration = self.calculate_parking_fee(entry_time, exit_time)
+
+                        # 保存出库信息，等待用户点击缴费按钮
+                        self.pending_exit_info = {
+                            'plate': plate_number,
+                            'entry_time': entry_time,
+                            'exit_time': exit_time,
+                            'duration_hours': hours,
+                            'fee': fee,
+                            'duration': duration
+                        }
+
+                        # 不显示消息，信息已在统一信息框中显示
+
+                        # 保存详细信息用于显示
+                        self.last_transaction = {
+                            'type': 'exit_pending',  # 待缴费出库
+                            'plate': plate_number,
+                            'entry_time': entry_time,
+                            'exit_time': exit_time,
+                            'duration_hours': hours,
+                            'fee': fee
+                        }
+
+                        logger.info(f"车辆识别出库: {plate_number}, 停车{hours}小时, 费用{fee}元, 等待缴费")
+                    else:
+                        # 车辆入库
+                        current_parked = self.db.get_current_parked_vehicles_from_parkinfo()
+                        if len(current_parked) < self.total_spaces:
+                            # 添加到parkinfo表（state=1表示入库）
+                            self.db.add_park_info(plate_number, self.recognition_time, 0.0, 1)
+
+                            # 同时添加到parkvehicle表作为历史记录
+                            self.db.add_vehicle_info(plate_number, self.recognition_time, 0.0, 1)
+
+                            # 不显示消息，信息已在统一信息框中显示
+
+                            # 保存详细信息用于显示
+                            self.last_transaction = {
+                                'type': 'entry',
+                                'plate': plate_number,
+                                'entry_time': self.recognition_time,
+                                'exit_time': None,
+                                'duration_hours': 0,
+                                'fee': 0.0
+                            }
+
+                            logger.info(f"车辆入场: {plate_number}")
+                        else:
+                            self.message = "停车场已满，无法入场"
+                            self.message_color = RED
+                            logger.warning("停车场已满")
+
+                    # 更新车位信息
+                    self.update_parking_info()
+
+                except Exception as e:
+                    self.message = f"数据库操作失败: {str(e)}"
+                    self.message_color = RED
+                    logger.error(f"数据库操作失败: {e}")
+            else:
+                self.message = "未识别到车牌，请调整角度重试"
+                self.message_color = RED
+                self.message_time = time.time()
+
+        except Exception as e:
+            self.message = f"识别失败: {str(e)}"
+            self.message_color = RED
+            self.message_time = time.time()
+            logger.error(f"车牌识别失败: {e}")
+
+        finally:
+            self.is_recognizing = False
+
+    def perform_search(self):
+        """执行车辆查询"""
+        try:
+            if not self.search_text.strip():
+                self.search_results = []
+                return
+
+            if self.db is None:
+                logger.error("数据库连接不可用，无法执行查询")
+                return
+
+            search_term = self.search_text.strip()
+            logger.info(f"执行车辆查询: {search_term}")
+
+            # 查询当前在库车辆中包含搜索关键词的记录
+            query = """
+                SELECT carnumber, inorouttime
+                FROM parkinfo
+                WHERE state = 1 AND carnumber LIKE %s
+                ORDER BY inorouttime DESC
+                LIMIT 10
+            """
+
+            results = self.db.execute_query(query, (f"%{search_term}%",))
+
+            if results:
+                # 格式化查询结果
+                self.search_results = []
+                for row in results:
+                    carnumber = row[0]
+                    inorouttime = row[1]
+                    # 转换为与原始数据相同的格式
+                    if isinstance(inorouttime, str):
+                        time_str = inorouttime
+                    else:
+                        time_str = inorouttime.strftime('%Y-%m-%d %H:%M:%S')
+                    self.search_results.append((carnumber, time_str))
+
+                logger.info(f"查询完成，找到{len(self.search_results)}条记录")
+                self.message = f"找到{len(self.search_results)}条匹配记录"
+                self.message_color = GREEN
+                self.message_time = time.time()
+            else:
+                self.search_results = []
+                logger.info("查询完成，未找到匹配记录")
+                self.message = "未找到匹配的车辆记录"
+                self.message_color = (255, 165, 0)  # 橙色
+                self.message_time = time.time()
+
+        except Exception as e:
+            logger.error(f"查询车辆信息失败: {e}")
+            self.search_results = []
+            self.message = "查询失败，请重试"
+            self.message_color = RED
+            self.message_time = time.time()
+
+    def cancel_payment(self):
+        """取消支付流程"""
+        try:
+            logger.info("用户取消支付流程")
+
+            # 重置支付相关状态
+            self.show_payment_sidebar = False
+            self.selected_payment_method = None
+            self.show_qr_code = False
+            self.pending_exit_info = None
+
+            # 显示取消消息
+            self.message = "已取消支付，车辆仍在库中"
+            self.message_color = (255, 165, 0)  # 橙色
+            self.message_time = time.time()
+
+            # 更新车位信息
+            self.update_parking_info()
+
+        except Exception as e:
+            logger.error(f"取消支付失败: {e}")
+            self.message = "取消支付时出错"
+            self.message_color = RED
+            self.message_time = time.time()
+
+    def complete_payment(self, payment_method):
+        """完成支付流程"""
+        if not self.pending_exit_info:
+            return
+
+        try:
+            info = self.pending_exit_info
+
+            # 从parkinfo表删除记录（parkinfo只保存当前在库车辆）
+            self.db.delete_park_info(info['plate'])
+
+            # 同时添加到parkvehicle表作为历史记录
+            self.db.add_vehicle_info(info['plate'], info['exit_time'], info['fee'], 0)
+
+            # 不显示消息，信息已在统一信息框中显示
+
+            # 保存详细信息用于显示
+            self.last_transaction = {
+                'type': 'exit',
+                'plate': info['plate'],
+                'entry_time': info['entry_time'],
+                'exit_time': info['exit_time'],
+                'duration_hours': info['duration_hours'],
+                'fee': info['fee'],
+                'payment_method': payment_method
+            }
+
+            # 更新车位信息
+            self.update_parking_info()
+
+            logger.info(f"支付完成: {info['plate']}, 停车{info['duration_hours']}小时, 费用{info['fee']}元, 支付方式: {payment_method}")
+
+        except Exception as e:
+            self.message = f"支付处理失败: {str(e)}"
+            self.message_color = RED
+            self.message_time = time.time()
+            logger.error(f"支付处理失败: {e}")
+        finally:
+            # 清理待支付信息
+            self.pending_exit_info = None
+
+
+
+    def handle_events(self):
+        """处理事件"""
+        mouse_pos = pygame.mouse.get_pos()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+                return
+
+            # 处理键盘事件
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    # ESC键取消缴费流程
+                    if self.show_payment_sidebar:
+                        self.cancel_payment()
+                        continue
+                    # ESC键取消查询
+                    elif self.search_active:
+                        self.search_active = False
+                        self.search_text = ""
+                        self.search_results = []
+                        continue
+
+                # 处理查询框输入
+                elif self.search_active and self.show_parking_info:
+                    if event.key == pygame.K_RETURN:
+                        # 回车键执行查询
+                        self.perform_search()
+                    elif event.key == pygame.K_BACKSPACE:
+                        # 退格键删除字符
+                        self.search_text = self.search_text[:-1]
+                        if not self.search_text:
+                            self.search_results = []
+                    else:
+                        # 添加字符（只允许数字、字母和中文）
+                        if event.unicode.isprintable() and len(self.search_text) < 20:
+                            self.search_text += event.unicode
+                            # 实时搜索
+                            if len(self.search_text) >= 2:
+                                self.perform_search()
+
+            # 处理查询框点击事件
+            if event.type == pygame.MOUSEBUTTONDOWN and self.show_parking_info:
+                mouse_pos = event.pos
+                # 检查是否点击了查询框
+                if hasattr(self, 'search_rect') and self.search_rect.collidepoint(mouse_pos):
+                    self.search_active = True
+                else:
+                    self.search_active = False
+
+            # 处理缴费边栏事件
+            if self.show_payment_sidebar and event.type == pygame.MOUSEBUTTONDOWN:
+                mouse_pos = event.pos
+
+                # 检查支付方式按钮点击
+                if hasattr(self, 'wechat_button_rect') and self.wechat_button_rect.collidepoint(mouse_pos):
+                    self.selected_payment_method = "微信支付"
+                    self.show_qr_code = True
+                    print(f"DEBUG: 选择微信支付, show_qr_code={self.show_qr_code}")
+                    logger.info("选择微信支付")
+                elif hasattr(self, 'alipay_button_rect') and self.alipay_button_rect.collidepoint(mouse_pos):
+                    self.selected_payment_method = "支付宝"
+                    self.show_qr_code = True
+                    print(f"DEBUG: 选择支付宝, show_qr_code={self.show_qr_code}")
+                    logger.info("选择支付宝")
+                elif hasattr(self, 'cash_button_rect') and self.cash_button_rect.collidepoint(mouse_pos):
+                    self.selected_payment_method = "现金支付"
+                    self.show_qr_code = False
+                    print(f"DEBUG: 选择现金支付, show_qr_code={self.show_qr_code}")
+                    logger.info("选择现金支付")
+
+                # 检查取消按钮点击
+                if (hasattr(self, 'cancel_payment_rect') and
+                    self.cancel_payment_rect.collidepoint(mouse_pos)):
+                    self.cancel_payment()
+
+                # 检查确认支付按钮点击
+                elif (hasattr(self, 'confirm_payment_rect') and
+                    self.confirm_payment_rect.collidepoint(mouse_pos) and
+                    self.selected_payment_method):
+                    self.complete_payment(self.selected_payment_method)
+                    self.show_payment_sidebar = False
+                    self.selected_payment_method = None
+                    self.show_qr_code = False
+                    logger.info(f"确认支付: {self.selected_payment_method}")
+                continue
+
+            if self.recognize_button.handle_event(event):
+                if not self.is_recognizing:
+                    logger.info("用户点击识别按钮")
+                    recognition_thread = threading.Thread(target=self.recognize_plate_with_baidu, daemon=True)
+                    recognition_thread.start()
+
+            if self.parking_info_button.handle_event(event):
+                logger.info("用户点击停车信息按钮")
+                # 切换停车信息显示状态
+                self.show_parking_info = not self.show_parking_info
+                # 如果打开停车信息，关闭其他显示
+                if self.show_parking_info:
+                    self.show_payment_sidebar = False  # 关闭缴费系统
+                    self.message = "显示当前在库车辆"
+                    self.message_color = GREEN
+                    self.message_time = time.time()
+                else:
+                    self.message = "关闭停车信息"
+                    self.message_color = TEXT_COLOR
+                    self.message_time = time.time()
+                self.update_parking_info()
+
+            if self.payment_system_button.handle_event(event):
+                logger.info("用户点击缴费系统按钮")
+                if self.pending_exit_info:
+                    # 在右侧边栏显示缴费选项
+                    self.show_payment_sidebar = True
+                    self.show_parking_info = False  # 关闭停车信息显示
+                    logger.info(f"显示缴费边栏: {self.pending_exit_info['plate']}")
+                else:
+                    self.message = "没有待缴费的车辆"
+                    self.message_color = RED
+                    self.message_time = time.time()
+
+            if self.statistics_button.handle_event(event):
+                logger.info("用户点击统计分析按钮")
+                # 防重复点击机制
+                current_time = time.time()
+                if current_time - self.last_statistics_click_time > 2.0:  # 2秒内不允许重复点击
+                    self.last_statistics_click_time = current_time
+                    self.open_statistics_window()
+                else:
+                    logger.info("统计窗口点击过于频繁，忽略")
+                    self.message = "请勿重复点击"
+                    self.message_color = (255, 165, 0)  # 橙色
+                    self.message_time = time.time()
+
+            if self.exit_button.handle_event(event):
+                logger.info("用户点击退出按钮")
+                self.running = False
+                return
+
+        # 检查鼠标悬停
+        self.recognize_button.check_hover(mouse_pos)
+        self.parking_info_button.check_hover(mouse_pos)
+        self.payment_system_button.check_hover(mouse_pos)
+        self.statistics_button.check_hover(mouse_pos)
+        self.exit_button.check_hover(mouse_pos)
+
+    def draw_camera_feed(self):
+        """绘制摄像头画面"""
+        if self.camera_frame is not None:
+            try:
+                # 使用更高效的surface创建方法
+                frame_surface = pygame.surfarray.make_surface(
+                    np.transpose(self.camera_frame, (1, 0, 2))
+                )
+                # 直接绘制到目标位置
+                self.screen.blit(frame_surface, self.recognition_rect.topleft)
+            except Exception as e:
+                logger.error(f"绘制摄像头画面失败: {e}")
+                self.draw_placeholder()
+        else:
+            self.draw_placeholder()
+
+        # 绘制边框
+        pygame.draw.rect(self.screen, BORDER_COLOR, self.recognition_rect, 3)
+
+    def draw_placeholder(self):
+        """绘制占位符"""
+        pygame.draw.rect(self.screen, LIGHT_GRAY, self.recognition_rect)
+
+        if self.camera is None:
+            text = "摄像头初始化中..."
+        else:
+            text = "等待摄像头画面..."
+
+        text_surface = normal_font.render(text, True, TEXT_COLOR)
+        text_rect = text_surface.get_rect(center=self.recognition_rect.center)
+        self.screen.blit(text_surface, text_rect)
+
+    def draw_sidebar(self):
+        """绘制右侧控制面板"""
+        # 绘制侧边栏背景
+        sidebar_rect = pygame.Rect(self.sidebar_x, 0, self.sidebar_width, self.SCREEN_HEIGHT)
+        pygame.draw.rect(self.screen, SIDEBAR_COLOR, sidebar_rect)
+        pygame.draw.line(self.screen, BORDER_COLOR, (self.sidebar_x, 0), (self.sidebar_x, self.SCREEN_HEIGHT), 2)
+
+        # 标题 - "智能停车场识别系统" 居中加粗
+        y_pos = 30
+        title_text = title_font.render("智能停车场识别系统", True, TEXT_COLOR)
+        title_rect = title_text.get_rect(center=(self.sidebar_x + self.sidebar_width // 2, y_pos))
+        self.screen.blit(title_text, title_rect)
+
+        # 车位信息区域 - 并排显示（上移）
+        y_pos = 80
+        remaining_spaces = self.total_spaces - self.occupied_spaces
+
+        # 车位信息背景框 - 恢复原始高度
+        info_rect = pygame.Rect(self.sidebar_x + 20, y_pos - 10, self.sidebar_width - 40, 80)
+        pygame.draw.rect(self.screen, WHITE, info_rect)
+        pygame.draw.rect(self.screen, BORDER_COLOR, info_rect, 2)
+
+        # 左侧：共有车位
+        total_text = info_font.render(f"共有车位", True, TEXT_COLOR)
+        total_num = info_font.render(f"{self.total_spaces:02d}", True, BUTTON_COLOR)
+
+        left_center_x = self.sidebar_x + self.sidebar_width // 4
+        total_text_rect = total_text.get_rect(center=(left_center_x, y_pos + 15))
+        total_num_rect = total_num.get_rect(center=(left_center_x, y_pos + 45))
+
+        self.screen.blit(total_text, total_text_rect)
+        self.screen.blit(total_num, total_num_rect)
+
+        # 右侧：剩余车位
+        remaining_text = info_font.render(f"剩余车位", True, TEXT_COLOR)
+        color = GREEN if remaining_spaces > 0 else RED
+        remaining_num = info_font.render(f"{remaining_spaces:02d}", True, color)
+
+        right_center_x = self.sidebar_x + self.sidebar_width * 3 // 4
+        remaining_text_rect = remaining_text.get_rect(center=(right_center_x, y_pos + 15))
+        remaining_num_rect = remaining_num.get_rect(center=(right_center_x, y_pos + 45))
+
+        self.screen.blit(remaining_text, remaining_text_rect)
+        self.screen.blit(remaining_num, remaining_num_rect)
+
+        # 中间分隔线
+        pygame.draw.line(self.screen, BORDER_COLOR,
+                         (self.sidebar_x + self.sidebar_width // 2, y_pos),
+                         (self.sidebar_x + self.sidebar_width // 2, y_pos + 60), 2)
+
+        # 停车场状态显示 - 移到车位框外面下方
+        status_y = y_pos + 90  # 车位框底部 + 10像素间距
+        status_text, status_color = self.get_parking_status_info()
+
+        # 绘制状态文字（无背景框）
+        status_surface = small_font.render(status_text, True, status_color)
+        status_text_rect = status_surface.get_rect(center=(self.sidebar_x + self.sidebar_width // 2, status_y))
+        self.screen.blit(status_surface, status_text_rect)
+
+        # 停车信息显示区域或识别结果显示区域
+        content_start_y = status_y + 25  # 状态文字下方25像素
+        if self.show_parking_info:
+            self.draw_parking_info_list(content_start_y)
+        elif self.show_payment_sidebar:
+            # 显示缴费边栏
+            self.draw_payment_sidebar(content_start_y)
+        elif self.last_transaction:
+            self.draw_recognition_result(content_start_y)
+
+        # 消息显示区域 - 只显示简短的系统消息
+        if self.message and self.message_time and not self.last_transaction:
+            if time.time() - self.message_time < 5:  # 显示5秒
+                y_pos = self.SCREEN_HEIGHT - 100
+
+                # 简短消息框
+                msg_rect = pygame.Rect(self.sidebar_x + 20, y_pos, self.sidebar_width - 40, 60)
+                pygame.draw.rect(self.screen, WHITE, msg_rect)
+                pygame.draw.rect(self.screen, self.message_color, msg_rect, 2)
+
+                # 绘制消息文本
+                msg_surface = normal_font.render(self.message, True, self.message_color)
+                msg_rect_center = msg_surface.get_rect(center=msg_rect.center)
+                self.screen.blit(msg_surface, msg_rect_center)
+            else:
+                self.message = ""
+
+        # 系统状态 - 最下方，避免与缴费系统重叠
+        status_y = self.SCREEN_HEIGHT - 15  # 从-30调整到-15，向下移动
+        status_text = "系统运行正常" if not self.is_recognizing else "正在识别..."
+        status_color = GREEN if not self.is_recognizing else TEXT_COLOR
+        status_surface = small_font.render(status_text, True, status_color)
+        status_rect = status_surface.get_rect(center=(self.sidebar_x + self.sidebar_width // 2, status_y))
+        self.screen.blit(status_surface, status_rect)
+
+    def draw_recognition_result(self, start_y):
+        """绘制识别结果 - 合并信息显示"""
+        if not self.last_transaction:
+            return
+
+        transaction = self.last_transaction
+
+        # 统一的信息框，包含所有必要信息
+        self.draw_unified_info_box(transaction, start_y)
+
+    def draw_unified_info_box(self, transaction, start_y):
+        """绘制统一的信息框"""
+        transaction_type = transaction['type']
+
+        # 根据类型确定框的高度和颜色
+        if transaction_type == 'entry':
+            box_height = 140
+            border_color = GREEN
+            title_text = "车辆入库成功"
+            title_color = GREEN
+        elif transaction_type == 'exit_pending':
+            box_height = 180
+            border_color = (255, 165, 0)  # 橙色
+            title_text = "车辆出库 - 待缴费"
+            title_color = (255, 165, 0)
+        elif transaction_type == 'exit':
+            box_height = 200
+            border_color = GREEN
+            title_text = "缴费完成 - 出库成功"
+            title_color = GREEN
+        else:
+            return
+
+        # 绘制信息框
+        result_rect = pygame.Rect(self.sidebar_x + 20, start_y, self.sidebar_width - 40, box_height)
+        pygame.draw.rect(self.screen, WHITE, result_rect)
+        pygame.draw.rect(self.screen, border_color, result_rect, 3)
+
+        # 标题
+        title_surface = info_font.render(title_text, True, title_color)
+        title_rect = title_surface.get_rect(center=(result_rect.centerx, start_y + 20))
+        self.screen.blit(title_surface, title_rect)
+
+        y_pos = start_y + 45
+
+        # 车牌号
+        plate_text = normal_font.render(f"车牌号: {transaction['plate']}", True, TEXT_COLOR)
+        self.screen.blit(plate_text, (self.sidebar_x + 35, y_pos))
+        y_pos += 25
+
+        # 根据类型显示不同信息
+        if transaction_type == 'entry':
+            # 入库信息
+            entry_time_str = transaction['entry_time'].strftime('%Y-%m-%d %H:%M')
+            entry_text = small_font.render(f"入库时间: {entry_time_str}", True, TEXT_COLOR)
+            self.screen.blit(entry_text, (self.sidebar_x + 35, y_pos))
+            y_pos += 20
+
+            # 收费标准
+            rate_text = small_font.render("收费标准: 10元/小时", True, TEXT_COLOR)
+            self.screen.blit(rate_text, (self.sidebar_x + 35, y_pos))
+            y_pos += 25
+
+            # 提示信息
+            tip_text = small_font.render("车辆已成功入库", True, GREEN)
+            self.screen.blit(tip_text, (self.sidebar_x + 35, y_pos))
+
+        elif transaction_type == 'exit_pending':
+            # 待缴费出库信息
+            entry_time_str = transaction['entry_time'].strftime('%Y-%m-%d %H:%M')
+            entry_text = small_font.render(f"入库时间: {entry_time_str}", True, TEXT_COLOR)
+            self.screen.blit(entry_text, (self.sidebar_x + 35, y_pos))
+            y_pos += 20
+
+            exit_time_str = transaction['exit_time'].strftime('%Y-%m-%d %H:%M')
+            exit_text = small_font.render(f"出库时间: {exit_time_str}", True, TEXT_COLOR)
+            self.screen.blit(exit_text, (self.sidebar_x + 35, y_pos))
+            y_pos += 20
+
+            # 停车时长
+            duration_text = small_font.render(f"停车时长: {transaction['duration_hours']}小时", True, TEXT_COLOR)
+            self.screen.blit(duration_text, (self.sidebar_x + 35, y_pos))
+            y_pos += 20
+
+            # 应付金额（突出显示）
+            fee_text = normal_font.render(f"应付金额: {transaction['fee']:.0f}元", True, RED)
+            self.screen.blit(fee_text, (self.sidebar_x + 35, y_pos))
+            y_pos += 25
+
+            # 操作提示
+            tip_text = small_font.render("请点击缴费系统按钮进行支付", True, (255, 165, 0))
+            self.screen.blit(tip_text, (self.sidebar_x + 35, y_pos))
+
+        elif transaction_type == 'exit':
+            # 已完成支付的出库信息
+            duration_text = small_font.render(f"停车时长: {transaction['duration_hours']}小时", True, TEXT_COLOR)
+            self.screen.blit(duration_text, (self.sidebar_x + 35, y_pos))
+            y_pos += 20
+
+            # 支付金额
+            fee_text = small_font.render(f"支付金额: {transaction['fee']:.0f}元", True, TEXT_COLOR)
+            self.screen.blit(fee_text, (self.sidebar_x + 35, y_pos))
+            y_pos += 20
+
+            # 支付方式
+            if 'payment_method' in transaction and transaction['payment_method']:
+                payment_text = small_font.render(f"支付方式: {transaction['payment_method']}", True, TEXT_COLOR)
+                self.screen.blit(payment_text, (self.sidebar_x + 35, y_pos))
+                y_pos += 20
+
+            # 完成时间
+            exit_time_str = transaction['exit_time'].strftime('%Y-%m-%d %H:%M')
+            exit_text = small_font.render(f"出库时间: {exit_time_str}", True, TEXT_COLOR)
+            self.screen.blit(exit_text, (self.sidebar_x + 35, y_pos))
+            y_pos += 25
+
+            # 完成提示
+            complete_text = small_font.render("支付成功，车辆已出库", True, GREEN)
+            self.screen.blit(complete_text, (self.sidebar_x + 35, y_pos))
+
+    def draw_payment_qr_code(self, start_y):
+        """在右侧边栏显示支付二维码"""
+        if not self.payment_window or not self.pending_exit_info:
+            return
+
+        # 二维码区域
+        qr_rect = pygame.Rect(self.sidebar_x + 20, start_y, self.sidebar_width - 40, 300)
+        pygame.draw.rect(self.screen, WHITE, qr_rect)
+        pygame.draw.rect(self.screen, (255, 165, 0), qr_rect, 3)  # 橙色边框
+
+        # 标题
+        title_text = info_font.render("扫码支付", True, (255, 165, 0))
+        title_rect = title_text.get_rect(center=(qr_rect.centerx, start_y + 20))
+        self.screen.blit(title_text, title_rect)
+
+        y_pos = start_y + 45
+
+        # 车牌号和金额
+        plate_text = normal_font.render(f"车牌: {self.pending_exit_info['plate']}", True, TEXT_COLOR)
+        self.screen.blit(plate_text, (self.sidebar_x + 35, y_pos))
+        y_pos += 25
+
+        fee_text = normal_font.render(f"金额: {self.pending_exit_info['fee']:.0f}元", True, RED)
+        self.screen.blit(fee_text, (self.sidebar_x + 35, y_pos))
+        y_pos += 30
+
+        # 显示二维码
+        if self.payment_window.qr_code_surface:
+            # 计算二维码居中位置
+            qr_x = self.sidebar_x + (self.sidebar_width - 120) // 2
+            qr_y = y_pos
+            self.screen.blit(self.payment_window.qr_code_surface, (qr_x, qr_y))
+            y_pos += 130
+        else:
+            # 二维码占位符
+            placeholder_rect = pygame.Rect(self.sidebar_x + 35, y_pos, 120, 120)
+            pygame.draw.rect(self.screen, (200, 200, 200), placeholder_rect)
+            pygame.draw.rect(self.screen, BORDER_COLOR, placeholder_rect, 1)
+
+            placeholder_text = small_font.render("二维码", True, TEXT_COLOR)
+            placeholder_rect_center = placeholder_text.get_rect(center=placeholder_rect.center)
+            self.screen.blit(placeholder_text, placeholder_rect_center)
+            y_pos += 130
+
+        # 使用说明
+        desc1 = small_font.render("使用微信/支付宝", True, TEXT_COLOR)
+        desc2 = small_font.render("扫描上方二维码", True, TEXT_COLOR)
+        desc3 = small_font.render("完成支付", True, TEXT_COLOR)
+
+        self.screen.blit(desc1, (self.sidebar_x + 35, y_pos))
+        y_pos += 18
+        self.screen.blit(desc2, (self.sidebar_x + 35, y_pos))
+        y_pos += 18
+        self.screen.blit(desc3, (self.sidebar_x + 35, y_pos))
+        y_pos += 25
+
+        # 提示信息
+        tip_text = small_font.render("或在左侧选择其他支付方式", True, (255, 165, 0))
+        self.screen.blit(tip_text, (self.sidebar_x + 35, y_pos))
+
+    def draw_payment_sidebar(self, start_y):
+        """在右侧边栏显示缴费系统"""
+        if not self.pending_exit_info:
+            return
+
+        # 缴费区域 - 调整高度，避免遮挡底部"系统运行正常"文字
+        max_height = self.SCREEN_HEIGHT - start_y - 40  # 增加底部预留空间，避免遮挡系统状态文字
+        payment_height = min(480, max_height)  # 减少最大高度到480像素
+        payment_rect = pygame.Rect(self.sidebar_x + 20, start_y, self.sidebar_width - 40, payment_height)
+        print(f"DEBUG: 缴费框尺寸 payment_rect={payment_rect}, height={payment_height}")
+        pygame.draw.rect(self.screen, WHITE, payment_rect)
+        pygame.draw.rect(self.screen, (255, 165, 0), payment_rect, 3)  # 橙色边框
+
+        # 标题和取消按钮
+        title_text = info_font.render("缴费系统", True, (255, 165, 0))
+        title_rect = title_text.get_rect(center=(payment_rect.centerx, start_y + 20))
+        self.screen.blit(title_text, title_rect)
+
+        # 取消按钮（右上角）
+        cancel_button_width = 50
+        cancel_button_height = 25
+        self.cancel_payment_rect = pygame.Rect(
+            payment_rect.right - cancel_button_width - 10,
+            start_y + 10,
+            cancel_button_width,
+            cancel_button_height
+        )
+        pygame.draw.rect(self.screen, RED, self.cancel_payment_rect)
+        pygame.draw.rect(self.screen, BORDER_COLOR, self.cancel_payment_rect, 2)
+        cancel_text = small_font.render("取消", True, WHITE)
+        cancel_text_rect = cancel_text.get_rect(center=self.cancel_payment_rect.center)
+        self.screen.blit(cancel_text, cancel_text_rect)
+
+        y_pos = start_y + 45
+
+        # 车辆信息 - 增加间距
+        plate_text = small_font.render(f"车牌: {self.pending_exit_info['plate']}", True, TEXT_COLOR)
+        self.screen.blit(plate_text, (self.sidebar_x + 30, y_pos))
+        y_pos += 22
+
+        duration_text = small_font.render(f"时长: {self.pending_exit_info['duration_hours']}小时", True, TEXT_COLOR)
+        self.screen.blit(duration_text, (self.sidebar_x + 30, y_pos))
+        y_pos += 22
+
+        fee_text = normal_font.render(f"金额: {self.pending_exit_info['fee']:.0f}元", True, RED)
+        self.screen.blit(fee_text, (self.sidebar_x + 30, y_pos))
+        y_pos += 30
+
+        # 支付方式选择
+        payment_title = small_font.render("选择支付方式:", True, TEXT_COLOR)
+        self.screen.blit(payment_title, (self.sidebar_x + 30, y_pos))
+        y_pos += 25
+
+        # 支付按钮区域 - 增加间距
+        button_width = self.sidebar_width - 60
+        button_height = 30
+        button_spacing = 10
+
+        # 微信支付按钮
+        wechat_rect = pygame.Rect(self.sidebar_x + 30, y_pos, button_width, button_height)
+        wechat_color = GREEN if self.selected_payment_method == "微信支付" else (34, 139, 34)
+        pygame.draw.rect(self.screen, wechat_color, wechat_rect)
+        pygame.draw.rect(self.screen, BORDER_COLOR, wechat_rect, 2)
+        wechat_text = small_font.render("微信支付", True, WHITE)
+        wechat_text_rect = wechat_text.get_rect(center=wechat_rect.center)
+        self.screen.blit(wechat_text, wechat_text_rect)
+        y_pos += button_height + button_spacing
+
+        # 支付宝按钮
+        alipay_rect = pygame.Rect(self.sidebar_x + 30, y_pos, button_width, button_height)
+        alipay_color = BUTTON_COLOR if self.selected_payment_method == "支付宝" else (70, 130, 180)
+        pygame.draw.rect(self.screen, alipay_color, alipay_rect)
+        pygame.draw.rect(self.screen, BORDER_COLOR, alipay_rect, 2)
+        alipay_text = small_font.render("支付宝", True, WHITE)
+        alipay_text_rect = alipay_text.get_rect(center=alipay_rect.center)
+        self.screen.blit(alipay_text, alipay_text_rect)
+        y_pos += button_height + button_spacing
+
+        # 现金支付按钮
+        cash_rect = pygame.Rect(self.sidebar_x + 30, y_pos, button_width, button_height)
+        cash_color = (255, 140, 0) if self.selected_payment_method == "现金支付" else (255, 165, 0)
+        pygame.draw.rect(self.screen, cash_color, cash_rect)
+        pygame.draw.rect(self.screen, BORDER_COLOR, cash_rect, 2)
+        cash_text = small_font.render("现金支付", True, WHITE)
+        cash_text_rect = cash_text.get_rect(center=cash_rect.center)
+        self.screen.blit(cash_text, cash_text_rect)
+        y_pos += button_height + 20
+
+        # 保存按钮区域用于事件处理
+        self.wechat_button_rect = wechat_rect
+        self.alipay_button_rect = alipay_rect
+        self.cash_button_rect = cash_rect
+
+        # 显示二维码（如果选择了微信或支付宝）
+        print(f"DEBUG: 检查二维码显示条件 - show_qr_code={self.show_qr_code}, method={self.selected_payment_method}")
+        if self.show_qr_code and self.selected_payment_method in ["微信支付", "支付宝"]:
+            # 确保二维码在框内显示，为大二维码预留更多空间
+            remaining_height = payment_rect.bottom - y_pos - 40  # 进一步减少预留空间
+            print(f"DEBUG: 条件满足，remaining_height={remaining_height}")
+            if remaining_height >= 120:  # 提高要求，确保大二维码有足够空间
+                print(f"DEBUG: 高度足够，调用 draw_payment_qr_in_sidebar")
+                self.draw_payment_qr_in_sidebar(y_pos, payment_rect.bottom)
+            else:
+                print(f"DEBUG: 高度不足({remaining_height}<120)，无法显示二维码")
+        else:
+            print(f"DEBUG: 条件不满足，不显示二维码")
+
+        # 选择提示和确认按钮 - 紧贴在二维码下方
+        if self.selected_payment_method:
+            # 计算二维码下方的位置
+            if self.show_qr_code and self.selected_payment_method in ["微信支付", "支付宝"]:
+                # 如果显示了二维码，按钮放在二维码下方
+                button_start_y = y_pos + 140  # 二维码区域下方
+            else:
+                # 如果没有二维码，按钮放在支付方式选择下方
+                button_start_y = y_pos + 10
+
+            # 已选择提示 - 居中显示，紧贴二维码
+            selected_text = small_font.render(f"已选择: {self.selected_payment_method}", True, GREEN)
+            selected_rect = selected_text.get_rect(center=(payment_rect.centerx, button_start_y))
+            self.screen.blit(selected_text, selected_rect)
+
+            # 确认支付按钮 - 紧贴在已选择文字下方
+            button_width = 100
+            button_height = 25
+            confirm_rect = pygame.Rect(
+                payment_rect.centerx - button_width // 2,  # 居中计算
+                button_start_y + 20,  # 紧贴在已选择文字下方
+                button_width,
+                button_height
+            )
+            pygame.draw.rect(self.screen, GREEN, confirm_rect)
+            pygame.draw.rect(self.screen, BORDER_COLOR, confirm_rect, 2)
+            confirm_text = small_font.render("确认支付", True, WHITE)
+            confirm_text_rect = confirm_text.get_rect(center=confirm_rect.center)
+            self.screen.blit(confirm_text, confirm_text_rect)
+            self.confirm_payment_rect = confirm_rect
+
+    def draw_payment_qr_in_sidebar(self, start_y, bottom_limit):
+        """在边栏中显示支付二维码"""
+        print(f"DEBUG: draw_payment_qr_in_sidebar called, start_y={start_y}, bottom_limit={bottom_limit}")
+
+        # 计算可用空间，为二维码和文字预留足够空间
+        available_height = bottom_limit - start_y - 80  # 增加底部预留空间，避免与确认按钮重叠
+        print(f"DEBUG: 可用高度 available_height={available_height}")
+
+        # 二维码标题 - 居中显示
+        qr_title = small_font.render(f"{self.selected_payment_method}:", True, TEXT_COLOR)
+        title_rect = qr_title.get_rect(center=(self.sidebar_x + self.sidebar_width // 2, start_y))
+        self.screen.blit(qr_title, title_rect)
+        start_y += 20  # 增加标题下方间距
+
+        # 根据可用空间调整二维码大小，优先保证二维码足够大
+        if available_height >= 140:
+            qr_size = 110  # 增大二维码
+        elif available_height >= 120:
+            qr_size = 100
+        elif available_height >= 100:
+            qr_size = 90
+        else:
+            qr_size = 80
+
+        print(f"DEBUG: 动态调整二维码尺寸 qr_size={qr_size}")
+
+        # 显示您的真实二维码 - 居中对齐
+        qr_x = self.sidebar_x + (self.sidebar_width - qr_size) // 2  # 居中计算
+        qr_rect = pygame.Rect(qr_x, start_y, qr_size, qr_size)
+
+        print(f"DEBUG: 二维码区域 qr_rect={qr_rect}")
+
+        # 尝试加载您的自定义二维码
+        custom_qr = self.load_custom_qr_code(self.selected_payment_method)
+
+        if custom_qr:
+            print(f"DEBUG: 二维码加载成功，开始缩放和显示")
+            # 调整二维码大小适应框内
+            custom_qr = pygame.transform.scale(custom_qr, (qr_size, qr_size))
+            self.screen.blit(custom_qr, qr_rect)
+            print(f"DEBUG: 二维码已绘制到屏幕，位置={qr_rect}")
+        else:
+            print(f"DEBUG: 二维码加载失败，显示占位符")
+            # 显示占位符（如果没有找到二维码文件）
+            pygame.draw.rect(self.screen, (240, 240, 240), qr_rect)
+            pygame.draw.rect(self.screen, BORDER_COLOR, qr_rect, 2)
+
+            # 占位符文字
+            qr_text1 = small_font.render("二维码", True, TEXT_COLOR)
+            qr_text2 = small_font.render("未找到", True, RED)
+
+            qr_text1_rect = qr_text1.get_rect(center=(qr_rect.centerx, qr_rect.centery - 8))
+            qr_text2_rect = qr_text2.get_rect(center=(qr_rect.centerx, qr_rect.centery + 8))
+
+            self.screen.blit(qr_text1, qr_text1_rect)
+            self.screen.blit(qr_text2, qr_text2_rect)
+
+        # 扫码提示 - 确保在二维码下方有足够间距，避免覆盖
+        tip_y = qr_rect.bottom + 10  # 增加间距
+        if tip_y + 40 < bottom_limit - 60:  # 确保有足够空间显示提示文字，避免与底部按钮重叠
+            tip_text = small_font.render("扫码支付", True, TEXT_COLOR)
+            tip_rect = tip_text.get_rect(center=(self.sidebar_x + self.sidebar_width // 2, tip_y))
+            self.screen.blit(tip_text, tip_rect)
+
+            amount_text = small_font.render(f"{self.pending_exit_info['fee']:.0f}元", True, RED)
+            amount_rect = amount_text.get_rect(center=(self.sidebar_x + self.sidebar_width // 2, tip_y + 18))
+            self.screen.blit(amount_text, amount_rect)
+
+            print(f"DEBUG: 提示文字位置 tip_y={tip_y}, amount_y={tip_y + 18}")
+        else:
+            print(f"DEBUG: 空间不足，跳过提示文字显示")
+
+    def open_statistics_window(self):
+        """打开统计分析窗口"""
+        try:
+            import subprocess
+            import sys
+            import os
+
+            # 获取当前脚本的目录
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            stats_script = os.path.join(current_dir, "statistics_window_with_charts.py")
+
+            # 检查文件是否存在
+            if not os.path.exists(stats_script):
+                logger.error(f"统计窗口文件不存在: {stats_script}")
+                # 回退到简单版本
+                stats_script = os.path.join(current_dir, "simple_statistics_window.py")
+                if not os.path.exists(stats_script):
+                    self.message = "统计窗口文件不存在"
+                    self.message_color = RED
+                    self.message_time = time.time()
+                    return
+
+            # 在新进程中运行统计窗口
+            subprocess.Popen([sys.executable, stats_script])
+            logger.info("统计分析窗口已打开")
+
+            # 显示成功消息
+            self.message = "图表版统计窗口已打开"
+            self.message_color = GREEN
+            self.message_time = time.time()
+
+        except Exception as e:
+            logger.error(f"打开统计窗口失败: {e}")
+            self.message = f"打开统计窗口失败: {str(e)}"
+            self.message_color = RED
+            self.message_time = time.time()
+
+    def load_custom_qr_code(self, payment_method):
+        """加载您的自定义二维码"""
+        print(f"DEBUG: load_custom_qr_code called, payment_method={payment_method}")
+        try:
+            if payment_method == "微信支付":
+                qr_path = r"C:\Users\luolu\Desktop\weix.jpg"
+            elif payment_method == "支付宝":
+                qr_path = r"C:\Users\luolu\Desktop\zhifb.jpg"
+            else:
+                print(f"DEBUG: 不支持的支付方式: {payment_method}")
+                return None
+
+            print(f"DEBUG: 尝试加载 {qr_path}")
+            # 只加载二维码图片，不进行缩放（缩放在显示时进行）
+            qr_surface = pygame.image.load(qr_path)
+            print(f"DEBUG: 加载成功，尺寸: {qr_surface.get_size()}")
+            logger.info(f"成功加载二维码: {qr_path}, 原始尺寸: {qr_surface.get_size()}")
+            return qr_surface
+
+        except pygame.error as e:
+            print(f"DEBUG: Pygame错误: {e}")
+            logger.warning(f"未找到二维码文件: {qr_path}, 错误: {e}")
+            return None
+        except Exception as e:
+            print(f"DEBUG: 其他错误: {e}")
+            logger.error(f"加载二维码失败: {qr_path}, 错误: {e}")
+            return None
+
+
+
+    def draw_parking_info_list(self, start_y):
+        """绘制停车信息列表 - 只显示入库信息"""
+        try:
+            if self.db is None:
+                # 数据库连接失败时显示错误信息
+                error_text = normal_font.render("数据库连接失败", True, RED)
+                error_rect = error_text.get_rect(center=(self.sidebar_x + self.sidebar_width // 2, start_y + 100))
+                self.screen.blit(error_text, error_rect)
+                return
+
+            # 获取显示数据：如果有查询结果则显示查询结果，否则显示当前在库车辆
+            if self.search_text and self.search_results:
+                current_parked = self.search_results
+                is_search_result = True
+            else:
+                current_parked = self.db.get_current_parked_vehicles_from_parkinfo()
+                is_search_result = False
+
+            # 停车信息标题 - 根据查询状态显示不同标题
+            title_y = start_y + 5  # 向下移动5px
+            if is_search_result and self.search_text:
+                title_text = info_font.render(f"查询结果: {self.search_text}", True, TEXT_COLOR)
+            else:
+                title_text = info_font.render("最新入库信息", True, TEXT_COLOR)
+            title_rect = title_text.get_rect(center=(self.sidebar_x + self.sidebar_width // 2, title_y))
+            self.screen.blit(title_text, title_rect)
+
+            # 信息列表区域 - 改为10条记录，为查询框留出空间
+            row_height = 25
+            max_records = 10  # 改为显示10条记录
+            header_height = 25  # 统计信息行高度
+            search_box_height = 35  # 查询框高度
+            list_height = header_height + search_box_height + (max_records * row_height) + 15  # 包含查询框的高度
+
+            list_rect = pygame.Rect(self.sidebar_x + 20, start_y + 40, self.sidebar_width - 40, list_height)
+            pygame.draw.rect(self.screen, WHITE, list_rect)
+            pygame.draw.rect(self.screen, BORDER_COLOR, list_rect, 2)
+
+            # 限制显示记录数为12条
+            display_count = min(len(current_parked), max_records)
+
+            if not current_parked:
+                # 无车辆信息
+                no_vehicle_text = normal_font.render("暂无入库车辆", True, TEXT_COLOR)
+                no_vehicle_rect = no_vehicle_text.get_rect(center=list_rect.center)
+                self.screen.blit(no_vehicle_text, no_vehicle_rect)
+            else:
+                # 显示车辆信息 - 调整起始位置与新框体对齐
+                y_offset = start_y + 55  # 调整到与框体内部对齐
+
+                # 显示统计信息
+                if is_search_result:
+                    count_text = small_font.render(f"查询结果: 找到{len(current_parked)}条记录", True, (0, 100, 200))
+                else:
+                    count_text = small_font.render(f"共{len(current_parked)}辆车在库 (显示最新{display_count}条)", True, (0, 100, 200))
+                self.screen.blit(count_text, (self.sidebar_x + 30, y_offset))
+                y_offset += 25
+
+                # 绘制查询框
+                search_rect = pygame.Rect(self.sidebar_x + 30, y_offset, self.sidebar_width - 80, 25)
+                self.search_rect = search_rect  # 保存查询框位置供事件处理使用
+
+                # 查询框背景色
+                search_bg_color = WHITE if self.search_active else LIGHT_GRAY
+                pygame.draw.rect(self.screen, search_bg_color, search_rect)
+                pygame.draw.rect(self.screen, BORDER_COLOR, search_rect, 2)
+
+                # 查询框文本
+                if self.search_text:
+                    search_display_text = self.search_text
+                else:
+                    search_display_text = "输入车牌号查询..." if not self.search_active else ""
+
+                if search_display_text:
+                    text_color = TEXT_COLOR if self.search_text else (150, 150, 150)
+                    search_text_surface = small_font.render(search_display_text, True, text_color)
+                    self.screen.blit(search_text_surface, (search_rect.x + 5, search_rect.y + 5))
+
+                y_offset += 35
+
+                # 显示车辆列表
+                for i in range(display_count):
+                    # current_parked格式: (carnumber, inorouttime_str)
+                    car_number = current_parked[i][0]
+                    time_str = current_parked[i][1]
+
+                    # 解析时间字符串并重新格式化
+                    try:
+                        if isinstance(time_str, str):
+                            # 尝试解析不同的时间格式
+                            try:
+                                record_datetime = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+                            except:
+                                try:
+                                    record_datetime = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S.%f')
+                                except:
+                                    record_datetime = datetime.now()
+                        else:
+                            record_datetime = time_str
+
+                        formatted_time = record_datetime.strftime('%m-%d %H:%M')
+                    except:
+                        formatted_time = str(time_str)[:16] if len(str(time_str)) > 16 else str(time_str)
+
+                    # 绘制每一行信息
+                    row_y = y_offset + i * row_height
+
+                    # 车牌号（左对齐）
+                    plate_text = small_font.render(f"{car_number}", True, TEXT_COLOR)
+                    plate_x = self.sidebar_x + 30
+                    self.screen.blit(plate_text, (plate_x, row_y))
+
+                    # 入库状态标识
+                    status_surface = small_font.render("在库", True, GREEN)
+                    status_x = self.sidebar_x + 140
+                    self.screen.blit(status_surface, (status_x, row_y))
+
+                    # 入库时间（右对齐）
+                    time_text = small_font.render(f"{formatted_time}", True, TEXT_COLOR)
+                    time_x = self.sidebar_x + self.sidebar_width - 30 - time_text.get_width()
+                    self.screen.blit(time_text, (time_x, row_y))
+
+                    # 分隔线
+                    if i < display_count - 1:
+                        line_y = row_y + 20
+                        pygame.draw.line(self.screen, LIGHT_GRAY,
+                                         (self.sidebar_x + 30, line_y),
+                                         (self.sidebar_x + self.sidebar_width - 30, line_y), 1)
+
+                # 移除"还有几辆车"的提示，只显示12条记录即可
+
+        except Exception as e:
+            logger.error(f"绘制停车信息失败: {e}")
+            error_text = normal_font.render("信息加载失败", True, RED)
+            error_rect = error_text.get_rect(center=(self.sidebar_x + self.sidebar_width // 2, start_y + 100))
+            self.screen.blit(error_text, error_rect)
+
+    def draw(self):
+        """绘制界面"""
+        # 清空屏幕 - 白色背景
+        self.screen.fill(BACKGROUND)
+
+        # 绘制摄像头画面（左侧）
+        self.draw_camera_feed()
+
+        # 绘制右侧控制面板
+        self.draw_sidebar()
+
+        # 绘制按钮（在摄像头下方）
+        self.recognize_button.draw(self.screen)
+        self.parking_info_button.draw(self.screen)
+        self.payment_system_button.draw(self.screen)
+        self.statistics_button.draw(self.screen)
+        self.exit_button.draw(self.screen)
+
+
+
+        pygame.display.flip()
+
+    def cleanup(self):
+        """清理资源"""
+        self.camera_running = False
+        if self.camera:
+            self.camera.release()
+        if self.db:
+            self.db.close()
+        logger.info("车牌识别窗口资源清理完成")
+
+    def is_running(self):
+        return self.running
+
+
+class PlateRecognitionSystem:
+    def __init__(self):
+        self.window = None
+        self.clock = None
+        self.is_running = False
+
+    def start(self):
+        """启动车牌识别系统"""
+        try:
+            # 初始化pygame
+            pygame.init()
+            pygame.font.init()
+
+            # 创建窗口
+            self.window = PlateRecognitionWindow()
+            self.clock = pygame.time.Clock()
+            self.is_running = True
+
+            # 运行主循环
+            while self.window.is_running():
+                self.window.handle_events()
+                self.window.draw()
+                self.clock.tick(60)
+
+            # 清理资源
+            self.window.cleanup()
+
+        except Exception as e:
+            logger.error(f"车牌识别系统运行出错: {e}")
+            print(f"车牌识别系统运行出错: {e}")
+        finally:
+            # 确保pygame退出
+            try:
+                pygame.quit()
+            except:
+                pass
+            self.is_running = False
+
+    def stop(self):
+        """停止车牌识别系统"""
+        if self.window:
+            self.window.cleanup()
+        try:
+            pygame.quit()
+        except:
+            pass
+        self.is_running = False
+
+
+# 主程序入口
+if __name__ == "__main__":
+    # 快速启动，避免黑屏
+    system = PlateRecognitionSystem()
+    system.start()
