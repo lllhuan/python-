@@ -1,0 +1,456 @@
+import pymysql
+from logger import logger
+from datetime import datetime
+
+
+class DatabaseManager:
+    def __init__(self):
+        """初始化数据库管理器"""
+        self.connection = None
+        self.connect()
+
+    def connect(self):
+        """连接到数据库"""
+        try:
+            self.connection = pymysql.connect(
+                host='localhost',
+                user='root',
+                password='123456',
+                database='aicarnumber',
+                charset='utf8mb4'
+            )
+            logger.info("数据库连接成功")
+        except Exception as e:
+            logger.error(f"数据库连接失败: {e}")
+            raise
+
+    def get_daily_income(self, start_date, end_date):
+        """获取每日收入统计"""
+        try:
+            cursor = self.connection.cursor()
+            # 使用price字段（实际的数据库字段名）
+            query = """
+                SELECT DATE(inorouttime) as date, SUM(price) as daily_income
+                FROM parkvehicle
+                WHERE inorouttime BETWEEN %s AND %s
+                AND state = 0 AND price > 0
+                GROUP BY DATE(inorouttime)
+                ORDER BY date
+            """
+            cursor.execute(query, (start_date, end_date))
+            result = cursor.fetchall()
+            cursor.close()
+            return result
+        except Exception as e:
+            logger.error(f"获取每日收入失败: {e}")
+            return []
+
+    def get_monthly_income(self, start_date, end_date):
+        """获取每月收入统计"""
+        try:
+            cursor = self.connection.cursor()
+            # 使用price字段，修复DATE_FORMAT语法
+            query = """
+                SELECT DATE_FORMAT(inorouttime, '%%Y-%%m') as month, SUM(price) as monthly_income
+                FROM parkvehicle
+                WHERE inorouttime BETWEEN %s AND %s
+                AND state = 0 AND price > 0
+                GROUP BY DATE_FORMAT(inorouttime, '%%Y-%%m')
+                ORDER BY month
+            """
+            cursor.execute(query, (start_date, end_date))
+            result = cursor.fetchall()
+            cursor.close()
+            return result
+        except Exception as e:
+            logger.error(f"获取每月收入失败: {e}")
+            return []
+
+    def get_daily_traffic(self, start_date, end_date):
+        """获取每日车流量统计"""
+        try:
+            cursor = self.connection.cursor()
+            query = """
+                SELECT DATE(inorouttime) as date,
+                       SUM(CASE WHEN state = 1 THEN 1 ELSE 0 END) as entries,
+                       SUM(CASE WHEN state = 0 THEN 1 ELSE 0 END) as exits
+                FROM parkvehicle
+                WHERE inorouttime BETWEEN %s AND %s
+                GROUP BY DATE(inorouttime)
+                ORDER BY date
+            """
+            cursor.execute(query, (start_date, end_date))
+            result = cursor.fetchall()
+            cursor.close()
+            return result
+        except Exception as e:
+            logger.error(f"获取每日车流量失败: {e}")
+            return []
+
+    def get_hourly_parking_usage(self, date):
+        """获取指定日期的每小时车位使用情况"""
+        try:
+            cursor = self.connection.cursor()
+            query = """
+                SELECT HOUR(inorouttime) as hour, COUNT(*) as count
+                FROM parkvehicle
+                WHERE DATE(inorouttime) = %s
+                GROUP BY HOUR(inorouttime)
+                ORDER BY hour
+            """
+            cursor.execute(query, (date,))
+            result = cursor.fetchall()
+            cursor.close()
+            return result
+        except Exception as e:
+            logger.error(f"获取每小时车位使用情况失败: {e}")
+            return []
+
+    def delete_park_info(self, carnumber):
+        """从parkinfo表删除车辆记录（用于出库）"""
+        try:
+            cursor = self.connection.cursor()
+            query = "DELETE FROM parkinfo WHERE carnumber = %s"
+            cursor.execute(query, (carnumber,))
+            self.connection.commit()
+            cursor.close()
+            logger.info(f"从parkinfo删除车辆: {carnumber}")
+        except Exception as e:
+            self.connection.rollback()
+            logger.error(f"删除parkinfo记录失败: {e}")
+            raise e
+
+    def close(self):
+        """关闭数据库连接"""
+        if self.connection:
+            self.connection.close()
+            logger.info("数据库连接已关闭")
+
+    def execute_query(self, query, params=None):
+        """执行查询并返回结果"""
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(query, params or ())
+                return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"查询执行失败: {e}")
+            raise
+
+    def execute_update(self, query, params=None):
+        """执行更新操作（插入、更新、删除）"""
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(query, params or ())
+                self.connection.commit()
+                return cursor.rowcount
+        except Exception as e:
+            self.connection.rollback()
+            logger.error(f"更新操作失败: {e}")
+            raise
+
+    def validate_state(self, state):
+        """验证状态值是否有效"""
+        valid_states = [0, 1, 2]  # 0:入库, 1:出库, 2:停车场已满
+        if state not in valid_states:
+            raise ValueError(f"无效的状态值: {state}，有效值为: {valid_states} (0:入库, 1:出库, 2:停车场已满)")
+        return state
+
+    def check_vehicle_exists(self, car_number):
+        """检查车辆是否已存在"""
+        query = "SELECT COUNT(*) FROM parkinfo WHERE carnumber = %s"
+        result = self.execute_query(query, (car_number,))
+        return result[0][0] > 0
+
+    # 车辆信息操作
+    def get_vehicle_info(self, car_number=None):
+        """查询车辆信息
+        Args:
+            car_number: 车牌号，如果为None则查询所有车辆信息
+        Returns:
+            查询结果列表
+        """
+        if car_number:
+            query = "SELECT * FROM parkvehicle WHERE carnumber = %s"
+            return self.execute_query(query, (car_number,))
+        else:
+            query = "SELECT * FROM parkvehicle"
+            return self.execute_query(query)
+
+    def add_vehicle_info(self, car_number, in_or_out_time, price, state):
+        """添加车辆信息
+        Args:
+            car_number: 车牌号
+            in_or_out_time: 进出时间
+            price: 价格
+            state: 状态(0:入库, 1:出库, 2:停车场已满)
+        Returns:
+            影响的行数
+        """
+        state = self.validate_state(state)
+        if self.check_vehicle_exists(car_number):
+            logger.warning(f"车辆 {car_number} 已存在，将进行更新操作")
+            return self.update_vehicle_info(car_number, in_or_out_time, price, state)
+
+        query = """
+        INSERT INTO parkvehicle (carnumber, inorouttime, price, state)
+        VALUES (%s, %s, %s, %s)
+        """
+        return self.execute_update(query, (car_number, in_or_out_time, price, state))
+
+    def delete_vehicle_info(self, car_number):
+        """删除车辆信息
+        Args:
+            car_number: 车牌号
+        Returns:
+            影响的行数
+        """
+        query = "DELETE FROM parkvehicle WHERE carnumber = %s"
+        return self.execute_update(query, (car_number,))
+
+    def update_vehicle_info(self, car_number, in_or_out_time, price, state):
+        """更新车辆信息
+        Args:
+            car_number: 车牌号
+            in_or_out_time: 进出时间
+            price: 价格
+            state: 状态(0:入库, 1:出库, 2:停车场已满)
+        Returns:
+            影响的行数
+        """
+        state = self.validate_state(state)
+        query = """
+        UPDATE parkvehicle 
+        SET inorouttime = %s, price = %s, state = %s
+        WHERE carnumber = %s
+        """
+        return self.execute_update(query, (in_or_out_time, price, state, car_number))
+
+    # 停车场信息操作
+    def get_park_info(self, car_number=None):
+        """查询停车场信息
+        Args:
+            car_number: 车牌号，如果为None则查询所有停车场信息
+        Returns:
+            查询结果列表
+        """
+        if car_number:
+            query = "SELECT * FROM parkinfo WHERE carnumber = %s"
+            return self.execute_query(query, (car_number,))
+        else:
+            query = "SELECT * FROM parkinfo"
+            return self.execute_query(query)
+
+    def add_park_info(self, car_number, in_or_out_time, price, state):
+        """添加停车场信息
+        Args:
+            car_number: 车牌号
+            in_or_out_time: 进出时间
+            price: 价格
+            state: 状态(0:出库, 1:入库, 2:停车场已满)
+        Returns:
+            影响的行数
+        """
+        state = self.validate_state(state)
+
+        try:
+            # 尝试直接插入新记录
+            query = """
+            INSERT INTO parkinfo (carnumber, inorouttime, price, state)
+            VALUES (%s, %s, %s, %s)
+            """
+            return self.execute_update(query, (car_number, in_or_out_time, price, state))
+        except Exception as e:
+            if "Duplicate entry" in str(e):
+                # 如果有唯一键冲突，使用REPLACE INTO替换记录
+                logger.warning(f"车牌 {car_number} 存在唯一键冲突，使用替换插入")
+                query = """
+                REPLACE INTO parkinfo (carnumber, inorouttime, price, state)
+                VALUES (%s, %s, %s, %s)
+                """
+                return self.execute_update(query, (car_number, in_or_out_time, price, state))
+            else:
+                raise e
+
+    def get_current_parked_vehicles_from_parkinfo(self):
+        """从parkinfo表获取当前在库车辆
+        Returns:
+            在库车辆列表 [(车牌号, 入库时间), ...]
+        """
+        query = """
+        SELECT carnumber, inorouttime
+        FROM parkinfo
+        WHERE state = 1
+        ORDER BY inorouttime DESC
+        """
+        return self.execute_query(query)
+
+    def find_latest_entry_from_parkinfo(self, car_number):
+        """从parkinfo表查找指定车牌的入库记录
+        Args:
+            car_number: 车牌号
+        Returns:
+            入库记录或None
+        """
+        query = """
+        SELECT * FROM parkinfo
+        WHERE carnumber = %s AND state = 1
+        """
+        result = self.execute_query(query, (car_number,))
+        return result[0] if result else None
+
+    def get_latest_park_records(self, limit=12):
+        """获取最新的停车记录（从parkvehicle表）
+        Args:
+            limit: 限制返回记录数
+        Returns:
+            最新停车记录列表
+        """
+        query = """
+        SELECT * FROM parkvehicle
+        ORDER BY inorouttime DESC
+        LIMIT %s
+        """
+        return self.execute_query(query, (limit,))
+
+    def update_park_info(self, car_number, in_or_out_time, price, state):
+        """更新停车场信息"""
+        state = self.validate_state(state)
+        query = """
+        UPDATE parkinfo 
+        SET inorouttime = %s, price = %s, state = %s
+        WHERE carnumber = %s
+        """
+        return self.execute_update(query, (in_or_out_time, price, state, car_number))
+
+    def delete_park_info(self, car_number):
+        """删除停车场信息"""
+        query = "DELETE FROM parkinfo WHERE carnumber = %s"
+        return self.execute_update(query, (car_number,))
+
+    # 停车记录表操作
+    def add_parking_record(self, car_number, record_time, record_type, parking_fee=0.0, duration_hours=0, entry_time=None):
+        """添加停车记录
+        Args:
+            car_number: 车牌号
+            record_time: 记录时间
+            record_type: 记录类型 (0=出库, 1=入库)
+            parking_fee: 停车费用
+            duration_hours: 停车时长(小时)
+            entry_time: 对应的入库时间(仅出库记录有效)
+        Returns:
+            影响的行数
+        """
+        query = """
+        INSERT INTO parking_records (carnumber, record_time, record_type, parking_fee, duration_hours, entry_time)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        return self.execute_update(query, (car_number, record_time, record_type, parking_fee, duration_hours, entry_time))
+
+    def get_parking_records(self, car_number=None, limit=None):
+        """查询停车记录
+        Args:
+            car_number: 车牌号，如果为None则查询所有记录
+            limit: 限制返回记录数
+        Returns:
+            查询结果列表
+        """
+        if car_number:
+            query = "SELECT * FROM parking_records WHERE carnumber = %s ORDER BY record_time DESC"
+            params = (car_number,)
+        else:
+            query = "SELECT * FROM parking_records ORDER BY record_time DESC"
+            params = ()
+
+        if limit:
+            query += f" LIMIT {limit}"
+
+        return self.execute_query(query, params)
+
+    def get_current_parked_vehicles(self):
+        """获取当前在库车辆
+        Returns:
+            在库车辆列表 [(车牌号, 入库时间), ...]
+        """
+        query = """
+        SELECT DISTINCT pr1.carnumber, pr1.record_time as entry_time
+        FROM parking_records pr1
+        WHERE pr1.record_type = 1
+        AND NOT EXISTS (
+            SELECT 1 FROM parking_records pr2
+            WHERE pr2.carnumber = pr1.carnumber
+            AND pr2.record_type = 0
+            AND pr2.record_time > pr1.record_time
+        )
+        ORDER BY pr1.record_time DESC
+        """
+        return self.execute_query(query)
+
+    def find_latest_entry_record(self, car_number):
+        """查找指定车牌的最新入库记录
+        Args:
+            car_number: 车牌号
+        Returns:
+            最新入库记录或None
+        """
+        query = """
+        SELECT * FROM parking_records
+        WHERE carnumber = %s AND record_type = 1
+        AND NOT EXISTS (
+            SELECT 1 FROM parking_records pr2
+            WHERE pr2.carnumber = %s
+            AND pr2.record_type = 0
+            AND pr2.record_time > parking_records.record_time
+        )
+        ORDER BY record_time DESC LIMIT 1
+        """
+        result = self.execute_query(query, (car_number, car_number))
+        return result[0] if result else None
+
+
+def print_table(data, columns):
+    if not data:
+        print("(empty set)")
+        return
+    col_widths = [len(col) for col in columns]
+    for row in data:
+        for i, val in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(val)))
+    header = " | ".join(col.ljust(col_widths[i]) for i, col in enumerate(columns))
+    print(header)
+    print("-+-".join('-' * w for w in col_widths))
+    for row in data:
+        print(" | ".join(str(val).ljust(col_widths[i]) for i, val in enumerate(row)))
+
+
+# 使用示例
+if __name__ == "__main__":
+    db = DatabaseManager()
+    try:
+        # 添加测试数据
+        test_data = [
+            ("粤A12345", "2024-06-12 08:00:00", 10.00, 0),
+            ("粤B12345", "2024-06-12 08:30:00", 10.00, 0),
+            ("粤C12345", "2024-06-12 09:00:00", 10.00, 0)
+        ]
+
+        # 添加数据到parkinfo表
+        for car_number, time_str, price, state in test_data:
+            try:
+                db.add_park_info(car_number, datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S"), price, state)
+                logger.info(f"成功添加/更新车辆信息: {car_number}")
+            except Exception as e:
+                logger.error(f"处理车辆 {car_number} 时发生错误: {e}")
+
+        # 查询并显示两个表的数据
+        print("\nParkInfo表数据:")
+        park_info = db.get_park_info()
+        print_table(park_info, ["id", "carnumber", "inorouttime", "price", "state"])
+
+        print("\nParkVehicle表数据:")
+        vehicle_info = db.get_vehicle_info()
+        print_table(vehicle_info, ["id", "carnumber", "inorouttime", "price", "state"])
+
+    except Exception as e:
+        logger.error(f"测试过程中发生错误: {e}")
+    finally:
+        db.close()
