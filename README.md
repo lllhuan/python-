@@ -16,3 +16,17 @@ apk测试验证模块——用于API测试和功能验证，确保系统稳定�
 
 
 
+![登录页面](https://github.com/user-attachments/assets/ffc46536-6cda-418d-9a6e-2bd2a36d0c03)
+登录页面
+
+![停车场页面](https://github.com/user-attachments/assets/816cc468-6001-4f3a-a8ef-2f0d4d1d810e)
+停车场系统页面
+
+![缴费](https://github.com/user-attachments/assets/4aaed838-c42c-4fff-a433-0a87622b087f)
+停车场缴费系统（请勿扫描二维码）
+
+![数据库](https://github.com/user-attachments/assets/8562780b-b1be-4c5e-85e4-9407bd432cfc)
+packinfo数据库表
+
+![sjk2](https://github.com/user-attachments/assets/2d35c3f4-b402-4d9b-a2f2-aed53304d86e)
+packvehicle表
