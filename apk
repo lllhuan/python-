@@ -1,0 +1,34 @@
+import requests
+
+# 替换为您的实际API Key和Secret Key
+API_KEY = "4HkU9zowlvcDAZg0N3qO0XYd"
+SECRET_KEY = "hxEQ8xNN96YrdmAbGXxeniPCWAh2errt"
+
+token_url = f"https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id={API_KEY}&client_secret={SECRET_KEY}"
+
+response = requests.get(token_url)
+if response.status_code == 200:
+    access_token = response.json().get("access_token")
+    print("24.56bd08cc0e8914f9237607b1f05d696f.2592000.1752025422.282335-119170097", access_token)
+else:
+    print("获取Token失败:", response.text)
+# encoding:utf-8
+import requests
+import base64
+
+'''
+车牌识别
+'''
+
+request_url = "https://aip.baidubce.com/rest/2.0/ocr/v1/license_plate"
+# 二进制方式打开图片文件
+f = open('0609.jpg', 'rb')
+img = base64.b64encode(f.read())
+
+params = {"image": img}
+access_token = '24.56bd08cc0e8914f9237607b1f05d696f.2592000.1752025422.282335-119170097'
+request_url = request_url + "?access_token=" + access_token
+headers = {'content-type': 'application/x-www-form-urlencoded'}
+response = requests.post(request_url, data=params, headers=headers)
+if response:
+    print (response.json())
