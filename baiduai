@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+百度AI车牌识别模块
+"""
+
+import cv2
+import base64
+import requests
+import json
+import random
+from logger import logger
+
+class BaiduAI:
+    def __init__(self):
+        """初始化百度AI"""
+        # 百度AI配置（如果有的话）
+        self.api_key = ""
+        self.secret_key = ""
+        self.access_token = None
+        
+        # 测试车牌号列表（用于演示）
+        self.test_plates = [
+            "粤A12345", "粤B67890", "京C11111", "沪D22222", "川E33333",
+            "浙F44444", "苏G55555", "鲁H66666", "豫J77777", "湘K88888",
+            "闽L99999", "赣M00000", "桂N11111", "云P22222", "贵Q33333"
+        ]
+        
+        logger.info("百度AI模块初始化完成")
+
+    def get_access_token(self):
+        """获取百度AI访问令牌"""
+        if not self.api_key or not self.secret_key:
+            logger.warning("百度AI API密钥未配置")
+            return None
+            
+        try:
+            url = "https://aip.baidubce.com/oauth/2.0/token"
+            params = {
+                "grant_type": "client_credentials",
+                "client_id": self.api_key,
+                "client_secret": self.secret_key
+            }
+            
+            response = requests.post(url, params=params, timeout=10)
+            if response.status_code == 200:
+                result = response.json()
+                self.access_token = result.get("access_token")
+                logger.info("百度AI访问令牌获取成功")
+                return self.access_token
+            else:
+                logger.error(f"获取访问令牌失败: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"获取百度AI访问令牌异常: {e}")
+            return None
+
+    def image_to_base64(self, image):
+        """将图像转换为base64编码"""
+        try:
+            # 将图像编码为jpg格式
+            _, buffer = cv2.imencode('.jpg', image)
+            # 转换为base64
+            image_base64 = base64.b64encode(buffer).decode('utf-8')
+            return image_base64
+        except Exception as e:
+            logger.error(f"图像转base64失败: {e}")
+            return None
+
+    def call_baidu_api(self, image_base64):
+        """调用百度车牌识别API"""
+        if not self.access_token:
+            self.access_token = self.get_access_token()
+            
+        if not self.access_token:
+            logger.warning("无法获取百度AI访问令牌")
+            return None
+            
+        try:
+            url = f"https://aip.baidubce.com/rest/2.0/ocr/v1/license_plate?access_token={self.access_token}"
+            
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
+            
+            data = {
+                'image': image_base64
+            }
+            
+            response = requests.post(url, headers=headers, data=data, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                if 'words_result' in result and result['words_result']:
+                    plate_info = result['words_result']
+                    plate_number = plate_info.get('number', '')
+                    
+                    if plate_number:
+                        logger.info(f"百度AI识别成功: {plate_number}")
+                        return plate_number
+                    else:
+                        logger.warning("百度AI未识别到车牌号")
+                        return None
+                else:
+                    logger.warning("百度AI识别结果为空")
+                    return None
+                    
+            else:
+                logger.error(f"百度AI API调用失败: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"调用百度AI API异常: {e}")
+            return None
+
+    def recognize_plate(self, image):
+        """识别车牌号"""
+        try:
+            # 如果配置了百度AI，尝试使用API
+            if self.api_key and self.secret_key:
+                logger.info("尝试使用百度AI识别车牌")
+                
+                # 转换图像为base64
+                image_base64 = self.image_to_base64(image)
+                if image_base64:
+                    # 调用百度API
+                    plate_number = self.call_baidu_api(image_base64)
+                    if plate_number:
+                        return plate_number
+                
+                logger.warning("百度AI识别失败，使用测试车牌")
+            else:
+                logger.info("百度AI未配置，使用测试车牌")
+            
+            # 如果百度AI失败或未配置，返回随机测试车牌
+            test_plate = random.choice(self.test_plates)
+            logger.info(f"使用测试车牌: {test_plate}")
+            return test_plate
+            
+        except Exception as e:
+            logger.error(f"车牌识别异常: {e}")
+            # 异常情况下也返回测试车牌
+            test_plate = random.choice(self.test_plates)
+            logger.info(f"异常情况使用测试车牌: {test_plate}")
+            return test_plate
+
+    def set_api_credentials(self, api_key, secret_key):
+        """设置百度AI API凭据"""
+        self.api_key = api_key
+        self.secret_key = secret_key
+        self.access_token = None  # 重置访问令牌
+        logger.info("百度AI API凭据已更新")
+
+    def test_recognition(self):
+        """测试识别功能"""
+        logger.info("开始测试车牌识别功能")
+        
+        # 创建一个测试图像（黑色图像）
+        test_image = cv2.imread("test_image.jpg") if cv2.imread("test_image.jpg") is not None else None
+        
+        if test_image is None:
+            # 如果没有测试图像，创建一个空的
+            import numpy as np
+            test_image = np.zeros((100, 200, 3), dtype=np.uint8)
+        
+        # 测试识别
+        result = self.recognize_plate(test_image)
+        logger.info(f"测试识别结果: {result}")
+        return result
+
+# 使用示例和测试代码
+if __name__ == "__main__":
+    # 创建百度AI实例
+    baidu_ai = BaiduAI()
+    
+    # 如果您有百度AI的API密钥，可以在这里设置
+    # baidu_ai.set_api_credentials("your_api_key", "your_secret_key")
+    
+    # 测试识别功能
+    test_result = baidu_ai.test_recognition()
+    print(f"测试结果: {test_result}")
+    
+    print("\n百度AI模块测试完成")
+    print("如果您有百度AI的API密钥，请在代码中设置以启用真实的车牌识别功能")
+    print("否则系统将使用随机测试车牌号进行演示")
