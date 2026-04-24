@@ -1,4 +1,4 @@
-# Smart Parking Recognition System (智能停车场识别系统)
+# 智能停车场识别系统
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0-orange.svg)](https://www.mysql.com/)
@@ -31,8 +31,8 @@
 | 其他       | PyMySQL、Logging、unittest           |
 
 ## 📁 项目结构
-
-SmartParkingSystem/
+```
+智能停车系统
 ├── main.py # 程序入口，模块协调与进程控制
 ├── login.py # 用户登录验证、注册及界面管理
 ├── BTN.py # 核心业务：车牌识别、停车管理、缴费、统计
@@ -43,17 +43,18 @@ SmartParkingSystem/
 ├── requirements.txt # 项目依赖
 ├── LICENSE # MIT 许可证
 └── README.md
+```
 
 
+## 快速开始
 
-## 🚀快速开始
-
-```bash
+```
 git clone https://github.com/yourname/SmartParkingSystem.git
 cd SmartParkingSystem
 pip install -r requirements.txt
 # 配置数据库与百度API密钥
 python main.py
+```
 
 ##📸 界面预览
 ![登录页面](https://github.com/user-attachments/assets/ffc46536-6cda-418d-9a6e-2bd2a36d0c03)
@@ -72,6 +73,7 @@ packinfo数据库表
 packvehicle表
 
 ⚠️ 注意事项
+
 需自行申请百度AI车牌识别接口，并替换 chepai.py 中的 API_KEY 和 SECRET_KEY
 
 缴费模块为模拟流程，不含真实支付
@@ -79,5 +81,4 @@ packvehicle表
 摄像头编号（默认0）请根据实际设备调整
 
 日志文件默认保存在 logs/ 目录
-📄 许可
-MIT © llllhuan
+
